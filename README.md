@@ -68,6 +68,54 @@ deliberately separate, bigger problem, not handled here.
   function this project never calls but which still blocks the build since
   Go compiles the whole package.
 
+## `force-quit-gui-nucular`: evaluating a GTK-free rebuild
+
+`cmd/force-quit-gui-nucular` is a prototype that reimplements
+`force-quit-gui` on top of [nucular](https://github.com/aarzilli/nucular)
+instead of GTK3, to see whether the cgo/GTK3 dependency above (`gotk3`,
+`libgtk-3`, `libdbus-1`, the version-pinning pain) can be dropped in favor of
+a pure-Go GUI stack. It's evaluation-only — not wired into `install.sh` or
+the Dagger pipeline — build and run it by hand:
+
+```
+go build -tags nucular_shiny -o bin/force-quit-gui-nucular ./cmd/force-quit-gui-nucular
+```
+
+**Why `-tags nucular_shiny` specifically:** nucular's default backend
+(without the tag) is [gio](https://gioui.org), and gio's own Linux backend
+turns out not to be pure Go either — it cgo-links `libEGL` directly
+(`#cgo linux,!android pkg-config: egl` in `gioui.org/internal/egl`), plus,
+depending on the windowing path it picks, `libX11`, `libxkbcommon`,
+`libxkbcommon-x11`, `libX11-xcb`, `libXcursor`, `libXfixes` (X11) or
+`wayland-egl` (Wayland). That's a different native dependency chain than
+GTK3, not a smaller one — building the default way would just trade one cgo
+toolkit for another and defeat the point of the prototype. The
+`nucular_shiny` tag switches nucular to `golang.org/x/exp/shiny`'s
+`x11driver` backend instead, which speaks the X11 protocol directly in pure
+Go — verified by checking shiny's driver source for `import "C"`: there
+isn't one, outside an unrelated macOS-only tool elsewhere in `x/exp`. So the
+original reasoning holds: we *do* actually need the tag, for as long as
+"no cgo" stays the actual goal of this prototype.
+
+One asterisk: `go.mod`/`go.sum` still list `gioui.org` and its whole
+dependency tree (`go-gl/glfw`, `go-text/typesetting`, `x/mobile`, `x/image`,
+etc.) as indirect requirements regardless — nucular's own `go.mod` requires
+gio unconditionally, since Go's module graph resolution doesn't know about
+build tags. None of that code is ever compiled or linked into the binary
+when `nucular_shiny` is set; it just rides along in the dependency graph
+without costing anything at link time.
+
+The trade-off for going pure-Go: `x11driver` has no HiDPI awareness of its
+own (worked around in `main.go`'s `uiScale()`, which reads `Xft.dpi` off the
+`RESOURCE_MANAGER` property directly) and exposes no iconify/withdraw call
+(worked around by the close-reopens-a-fresh-window respawn loop documented
+at the top of `main.go`).
+
+Confirmed by actually building it (`go build -tags nucular_shiny`) and
+running `ldd` on the result: `linux-vdso.so.1`, `libresolv.so.2`,
+`libc.so.6`, `ld-linux-x86-64.so.2` — nothing else. No X11, no EGL, no
+xkbcommon, no GTK.
+
 ## Install
 
 ```
