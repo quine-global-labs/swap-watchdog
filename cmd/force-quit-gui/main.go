@@ -129,8 +129,38 @@ func main() {
 	killButton, _ := gtk.ButtonNewWithLabel("Force Quit Selected")
 	box.PackStart(killButton, false, false, 0)
 
+	// selectedPID reads the PID column of the current selection, if any.
+	// Used both to act on the selected row and, in refresh, to find the
+	// matching row again after the store is rebuilt — GtkTreeSelection
+	// tracks a TreeIter, which store.Clear() invalidates, so without this
+	// every refresh would silently drop the highlight even though nothing
+	// the user cares about changed.
+	selectedPID := func() (int, bool) {
+		sel, err := treeView.GetSelection()
+		if err != nil {
+			return 0, false
+		}
+		model, iter, ok := sel.GetSelected()
+		if !ok {
+			return 0, false
+		}
+		val, err := model.(*gtk.TreeModel).GetValue(iter, 0)
+		if err != nil {
+			return 0, false
+		}
+		pidVal, err := val.GoValue()
+		if err != nil {
+			return 0, false
+		}
+		pid, ok := pidVal.(int)
+		return pid, ok
+	}
+
 	refresh := func() {
+		prevPID, hadSelection := selectedPID()
+
 		store.Clear()
+		var reselect *gtk.TreeIter
 		for _, p := range readProcesses() {
 			iter := store.Append()
 			store.Set(iter,
@@ -143,6 +173,14 @@ func main() {
 					fmt.Sprintf("%.1f", float64(p.totalKB)/1024),
 				},
 			)
+			if hadSelection && p.pid == prevPID {
+				reselect = iter
+			}
+		}
+		if reselect != nil {
+			if sel, err := treeView.GetSelection(); err == nil {
+				sel.SelectIter(reselect)
+			}
 		}
 	}
 	refresh()
@@ -153,25 +191,9 @@ func main() {
 	})
 
 	killButton.Connect("clicked", func() {
-		sel, err := treeView.GetSelection()
-		if err != nil {
-			return
-		}
-		model, iter, ok := sel.GetSelected()
+		pid, ok := selectedPID()
 		if !ok {
 			statusLabel.SetText("No process selected.")
-			return
-		}
-		val, err := model.(*gtk.TreeModel).GetValue(iter, 0)
-		if err != nil {
-			return
-		}
-		pidVal, err := val.GoValue()
-		if err != nil {
-			return
-		}
-		pid, ok := pidVal.(int)
-		if !ok {
 			return
 		}
 		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
