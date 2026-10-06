@@ -158,6 +158,8 @@ func main() {
 
 	refresh := func() {
 		prevPID, hadSelection := selectedPID()
+		vadj := scrolled.GetVAdjustment()
+		scrollPos := vadj.GetValue()
 
 		store.Clear()
 		var reselect *gtk.TreeIter
@@ -182,6 +184,15 @@ func main() {
 				sel.SelectIter(reselect)
 			}
 		}
+
+		// store.Clear() resets the scrollbar to the top immediately, but
+		// GTK doesn't recompute the adjustment's new upper bound until its
+		// next layout pass — setting the value back right here would just
+		// get clamped against the stale (just-emptied) bound. Deferring to
+		// an idle callback runs this after that layout pass instead.
+		glib.IdleAdd(func() {
+			vadj.SetValue(scrollPos)
+		})
 	}
 	refresh()
 
