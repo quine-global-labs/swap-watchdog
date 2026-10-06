@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
-# Builds swap-watchdog / force-quit-gui and installs them as systemd user
-# services. See README.md "Install" for the manual steps this automates,
+# Builds swap-watchdog / force-quit-gui / kdotool and installs them as
+# systemd user services. See README.md "Install" for what this automates,
 # and uninstall.sh to remove them again.
+#
+# The build runs in an ephemeral Nix-provisioned container via Dagger (see
+# .dagger/main.go) instead of requiring gtk3-devel, dbus-devel, or a Rust
+# toolchain on the host -- those are only needed at build time, and the
+# resulting binaries link against the host's own GTK3/D-Bus runtime libs,
+# which any normal Linux desktop already has.
 set -eu
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
@@ -13,19 +19,20 @@ if [[ "$HOME/Code/swap-watchdog" != "$(pwd)" ]]; then
 	echo "find the binaries." >&2
 fi
 
-if ! pkg-config --exists gtk+-3.0 2>/dev/null; then
-	echo "Warning: gtk+-3.0 dev files not found (need gtk3-devel) --" >&2
-	echo "building force-quit-gui will likely fail." >&2
+if ! command -v dagger >/dev/null 2>&1; then
+	echo "Error: dagger CLI not found. Install it (e.g. 'brew install dagger/tap/dagger')" >&2
+	echo "and a container runtime (podman or docker) before running this script." >&2
+	exit 1
 fi
 
-if ! command -v kdotool >/dev/null 2>&1; then
-	echo "Warning: kdotool not found -- swap-watchdog needs it at runtime" >&2
-	echo "to reveal the Force Quit Monitor window." >&2
-fi
+echo "Building swap-watchdog, force-quit-gui, and kdotool via Dagger+Nix..."
+dagger call build-linux --src=. --go-toolchain="$(go env GOROOT)" export --path=./bin
 
-echo "Building binaries..."
-go build -o bin/swap-watchdog ./cmd/swap-watchdog
-go build -o bin/force-quit-gui ./cmd/force-quit-gui
+chmod +x bin/swap-watchdog bin/force-quit-gui bin/kdotool
+
+echo "Installing kdotool to ~/.local/bin (so the systemd service can find it)..."
+mkdir -p "$HOME/.local/bin"
+cp bin/kdotool "$HOME/.local/bin/kdotool"
 
 echo "Installing unit files..."
 mkdir -p "$HOME/.config/systemd/user"

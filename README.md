@@ -54,9 +54,14 @@ deliberately separate, bigger problem, not handled here.
 
 ## Requirements
 
-- `kdotool` (KWin window control on Wayland — used by the watchdog to
-  reveal the GUI window).
-- `gtk3-devel` to build `force-quit-gui` (cgo bindings via `gotk3`).
+- `dagger` CLI + a container runtime (podman or docker) — the build runs
+  in an ephemeral Nix-provisioned container (see `.dagger/main.go`), so
+  `gtk3-devel`, `dbus-devel`, and a Rust toolchain (needed to build
+  `kdotool`, which isn't packaged for Fedora) never have to be installed on
+  the host. Only the resulting binaries' *runtime* libraries matter, and
+  any normal desktop — GTK-based or not — already has `libgtk-3`,
+  `libdbus-1`, etc., since KDE/GNOME portals and GTK-using apps pull them
+  in regardless of your actual desktop toolkit.
 - Built and tested against `gotk3 v0.6.3` — v0.6.4 fails to compile its
   `gdk` package against this system's GTK3 (3.24.52) with an `undefined:
   callback` error in `gdk_since_3_22.go`'s `Seat.Grab`, an unrelated
@@ -66,17 +71,16 @@ deliberately separate, bigger problem, not handled here.
 ## Install
 
 ```
-go build -o bin/swap-watchdog ./cmd/swap-watchdog
-go build -o bin/force-quit-gui ./cmd/force-quit-gui
-mkdir -p ~/.config/systemd/user
-cp systemd/*.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now force-quit-gui.service swap-watchdog.service
+./install.sh
 ```
+
+Builds `swap-watchdog`, `force-quit-gui`, and `kdotool` via Dagger into
+`bin/`, copies `kdotool` to `~/.local/bin`, installs the systemd user units,
+and enables + starts both services.
 
 The unit files' `ExecStart=` point at `%h/Code/swap-watchdog/bin/...` — if
 you clone this somewhere other than `~/Code/swap-watchdog`, edit the unit
-files to match before copying them.
+files to match before running `install.sh`.
 
 ## Uninstall
 

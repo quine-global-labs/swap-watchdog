@@ -20,4 +20,7 @@ echo "Killing any still-running instances..."
 pkill -f "$HOME/Code/swap-watchdog/bin/swap-watchdog" 2>/dev/null
 pkill -f "$HOME/Code/swap-watchdog/bin/force-quit-gui" 2>/dev/null
 
-echo "Done. Source and binaries are untouched; re-run install steps from README.md to re-enable."
+echo "Removing installed kdotool..."
+rm -f "$HOME/.local/bin/kdotool"
+
+echo "Done. Source and binaries are untouched; re-run ./install.sh to re-enable."
