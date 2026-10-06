@@ -6,18 +6,25 @@
 // the point of the switch; with it, nucular runs on x/exp/shiny's x11driver,
 // which is pure Go with no cgo at all.
 //
-// KNOWN GAP vs. the GTK version: x11driver exposes no iconify/withdraw call,
-// and nucular's OnClose only fires as a cleanup hook after the window
-// manager's close request has already begun tearing the window down — there
-// is no way to intercept delete-and-cancel like GTK's delete-event handler.
-// So, unlike force-quit-gui, clicking the window's close button here exits
-// the process instead of hiding it. Whatever reveals this window (currently
-// swap-watchdog, expecting an always-resident process) would need to relaunch
-// it rather than un-hide it. See TODO below for the planned fix.
+// WINDOW LIFECYCLE vs. the GTK version: x11driver exposes no iconify or
+// withdraw call, and nucular's OnClose only fires as a cleanup hook after
+// the window manager's close request has already begun tearing the window
+// down — there's no intercept-and-cancel like GTK's delete-event handler.
+// So clicking the close button always ends the current window.
 //
-// TODO: investigate extending nucular (or vendoring a thin wrapper around
-// x11driver) to support withdrawing/remapping the X11 window directly via
-// its xgb connection, so close-to-hide can work without pulling in cgo.
+// That turns out not to matter much here. swap-watchdog never talks to this
+// process directly — it reveals the window purely externally, by searching
+// for its title with kdotool and then un-minimizing/activating it (see
+// cmd/swap-watchdog/main.go's revealForceQuitWindow). kdotool is already a
+// hard runtime dependency of this project for that reason. So instead of
+// patching nucular/x11driver to support a native hide, main() just loops:
+// each time the window closes, it opens a fresh one in the same process and
+// re-minimizes it with the same kdotool call swap-watchdog itself depends
+// on. The process — and its warm Go runtime, the thing that actually matters
+// for staying responsive under memory pressure — never exits; only the X
+// window is briefly destroyed and recreated. The one cosmetic cost is a
+// flicker on manual close, which should be rare since this window is meant
+// to stay hidden until the watchdog reveals it.
 package main
 
 import (
@@ -26,6 +33,7 @@ import (
 	"image"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -39,6 +47,28 @@ import (
 	"github.com/jezek/xgb"
 	"github.com/jezek/xgb/xproto"
 )
+
+const windowTitle = "Force Quit Monitor"
+
+// minimizeSelf shells out to kdotool to minimize this process's own window,
+// mirroring what swap-watchdog does in reverse to reveal it. Best-effort: if
+// kdotool isn't installed or the window can't be found yet, the window just
+// stays visible rather than the app failing to start.
+func minimizeSelf() {
+	out, err := exec.Command("kdotool", "search", "-t", windowTitle).Output()
+	if err != nil {
+		log.Printf("kdotool search failed, leaving window visible: %v", err)
+		return
+	}
+	id := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
+	if id == "" {
+		log.Printf("kdotool search found no window titled %q", windowTitle)
+		return
+	}
+	if err := exec.Command("kdotool", "windowminimize", id).Run(); err != nil {
+		log.Printf("kdotool windowminimize failed: %v", err)
+	}
+}
 
 // uiScale reads Xft.dpi from the X RESOURCE_MANAGER property (the same value
 // GTK/Qt use to scale HiDPI desktops) and converts it to a nucular style
@@ -144,7 +174,17 @@ func (s *appState) refresh() {
 func main() {
 	state := &appState{selected: -1}
 	state.refresh()
+	scale := uiScale()
 
+	for {
+		runWindow(state, scale)
+	}
+}
+
+// runWindow opens a window, blocks until it's closed (by the user or the
+// window manager), and returns. Called in a loop from main so the process
+// stays alive across closes — see the file doc comment.
+func runWindow(state *appState, scale float64) {
 	var mw nucular.MasterWindow
 
 	update := func(w *nucular.Window) {
@@ -209,20 +249,33 @@ func main() {
 	}
 
 	mw = nucular.NewMasterWindowOptions(0, nucular.NewWindowOptions{
-		Title: "Force Quit Monitor",
+		Title: windowTitle,
 		Size:  image.Point{X: 700, Y: 450},
 	}, update)
-	mw.Style().Scale(uiScale())
+	mw.Style().Scale(scale)
 
+	stop := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(refreshInterval)
 		defer ticker.Stop()
-		for range ticker.C {
-			state.refresh()
-			mw.Changed()
+		for {
+			select {
+			case <-ticker.C:
+				state.refresh()
+				mw.Changed()
+			case <-stop:
+				return
+			}
 		}
 	}()
 
+	// Deferred so the window has actually been mapped before kdotool goes
+	// looking for it, rather than racing the initial show.
+	go func() {
+		time.Sleep(200 * time.Millisecond)
+		minimizeSelf()
+	}()
+
 	mw.Main()
-	log.Println("force-quit-gui-nucular exiting")
+	close(stop)
 }
