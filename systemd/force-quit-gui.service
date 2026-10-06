@@ -1,0 +1,14 @@
+[Unit]
+Description=Force Quit Monitor (always-running, starts minimized)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/Code/swap-watchdog/bin/force-quit-gui
+Restart=always
+RestartSec=5
+OOMScoreAdjust=-1000
+
+[Install]
+WantedBy=graphical-session.target

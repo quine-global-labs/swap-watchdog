@@ -1,0 +1,194 @@
+// force-quit-gui is a minimal, always-running process killer. It starts
+// minimized at login and is revealed by swap-watchdog when memory pressure
+// gets critical. Deliberately plain GTK3 (via gotk3) rather than anything
+// heavier, so it has the best chance of already being alive and responsive
+// exactly when the system is least able to start something new.
+package main
+
+import (
+	"bufio"
+	"fmt"
+	"log"
+	"os"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"syscall"
+
+	"github.com/gotk3/gotk3/glib"
+	"github.com/gotk3/gotk3/gtk"
+)
+
+const refreshIntervalMs = 2000
+
+type procInfo struct {
+	pid     int
+	name    string
+	rssKB   int64
+	swapKB  int64
+	totalKB int64
+}
+
+func readProcesses() []procInfo {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return nil
+	}
+	var procs []procInfo
+	for _, e := range entries {
+		pid, err := strconv.Atoi(e.Name())
+		if err != nil {
+			continue
+		}
+		status, err := os.Open(filepath.Join("/proc", e.Name(), "status"))
+		if err != nil {
+			continue
+		}
+		var rss, swap int64
+		scanner := bufio.NewScanner(status)
+		for scanner.Scan() {
+			fields := strings.Fields(scanner.Text())
+			if len(fields) < 2 {
+				continue
+			}
+			switch fields[0] {
+			case "VmRSS:":
+				rss, _ = strconv.ParseInt(fields[1], 10, 64)
+			case "VmSwap:":
+				swap, _ = strconv.ParseInt(fields[1], 10, 64)
+			}
+		}
+		status.Close()
+
+		if rss == 0 && swap == 0 {
+			continue
+		}
+
+		name := e.Name()
+		if commBytes, err := os.ReadFile(filepath.Join("/proc", e.Name(), "comm")); err == nil {
+			name = strings.TrimSpace(string(commBytes))
+		}
+
+		procs = append(procs, procInfo{pid: pid, name: name, rssKB: rss, swapKB: swap, totalKB: rss + swap})
+	}
+	sort.Slice(procs, func(i, j int) bool { return procs[i].totalKB > procs[j].totalKB })
+	return procs
+}
+
+func main() {
+	gtk.Init(nil)
+
+	win, err := gtk.WindowNew(gtk.WINDOW_TOPLEVEL)
+	if err != nil {
+		log.Fatalf("could not create window: %v", err)
+	}
+	win.SetTitle("Force Quit Monitor")
+	win.SetDefaultSize(700, 450)
+
+	// Closing the window just hides it — this process must keep running so
+	// the watchdog can reveal it again later without spawning anything new.
+	win.Connect("delete-event", func() bool {
+		win.Iconify()
+		return true
+	})
+
+	box, _ := gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 8)
+	box.SetBorderWidth(8)
+	win.Add(box)
+
+	label, _ := gtk.LabelNew("Sorted by memory + swap used, highest first. Select a process and force quit it.")
+	label.SetHAlign(gtk.ALIGN_START)
+	box.PackStart(label, false, false, 0)
+
+	// Columns: PID, Name, RSS (MB), Swap (MB), Total (MB)
+	store, _ := gtk.ListStoreNew(glib.TYPE_INT, glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING, glib.TYPE_STRING)
+
+	treeView, _ := gtk.TreeViewNewWithModel(store)
+	addColumn := func(title string, idx int) {
+		renderer, _ := gtk.CellRendererTextNew()
+		col, _ := gtk.TreeViewColumnNewWithAttribute(title, renderer, "text", idx)
+		col.SetSortColumnID(idx)
+		treeView.AppendColumn(col)
+	}
+	addColumn("PID", 0)
+	addColumn("Name", 1)
+	addColumn("RSS (MB)", 2)
+	addColumn("Swap (MB)", 3)
+	addColumn("Total (MB)", 4)
+
+	scrolled, _ := gtk.ScrolledWindowNew(nil, nil)
+	scrolled.SetPolicy(gtk.POLICY_AUTOMATIC, gtk.POLICY_AUTOMATIC)
+	scrolled.Add(treeView)
+	box.PackStart(scrolled, true, true, 0)
+
+	statusLabel, _ := gtk.LabelNew("")
+	statusLabel.SetHAlign(gtk.ALIGN_START)
+	box.PackStart(statusLabel, false, false, 0)
+
+	killButton, _ := gtk.ButtonNewWithLabel("Force Quit Selected")
+	box.PackStart(killButton, false, false, 0)
+
+	refresh := func() {
+		store.Clear()
+		for _, p := range readProcesses() {
+			iter := store.Append()
+			store.Set(iter,
+				[]int{0, 1, 2, 3, 4},
+				[]interface{}{
+					p.pid,
+					p.name,
+					fmt.Sprintf("%.1f", float64(p.rssKB)/1024),
+					fmt.Sprintf("%.1f", float64(p.swapKB)/1024),
+					fmt.Sprintf("%.1f", float64(p.totalKB)/1024),
+				},
+			)
+		}
+	}
+	refresh()
+
+	glib.TimeoutAdd(refreshIntervalMs, func() bool {
+		refresh()
+		return true // keep repeating
+	})
+
+	killButton.Connect("clicked", func() {
+		sel, err := treeView.GetSelection()
+		if err != nil {
+			return
+		}
+		model, iter, ok := sel.GetSelected()
+		if !ok {
+			statusLabel.SetText("No process selected.")
+			return
+		}
+		val, err := model.(*gtk.TreeModel).GetValue(iter, 0)
+		if err != nil {
+			return
+		}
+		pidVal, err := val.GoValue()
+		if err != nil {
+			return
+		}
+		pid, ok := pidVal.(int)
+		if !ok {
+			return
+		}
+		if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+			statusLabel.SetText(fmt.Sprintf("Failed to kill PID %d: %v", pid, err))
+		} else {
+			statusLabel.SetText(fmt.Sprintf("Killed PID %d.", pid))
+		}
+		refresh()
+	})
+
+	win.ShowAll()
+	// Deferred so the window has actually been mapped before we ask the
+	// compositor to minimize it, rather than racing the initial show.
+	glib.TimeoutAdd(200, func() bool {
+		win.Iconify()
+		return false // run once
+	})
+
+	gtk.Main()
+}

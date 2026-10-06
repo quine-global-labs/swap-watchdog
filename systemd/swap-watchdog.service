@@ -1,0 +1,14 @@
+[Unit]
+Description=Swap/memory-pressure watchdog that reveals Force Quit Monitor when critical
+After=graphical-session.target force-quit-gui.service
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/Code/swap-watchdog/bin/swap-watchdog
+Restart=always
+RestartSec=5
+OOMScoreAdjust=-1000
+
+[Install]
+WantedBy=graphical-session.target
