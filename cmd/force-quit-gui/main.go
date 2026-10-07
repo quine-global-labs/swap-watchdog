@@ -76,6 +76,64 @@ func readProcesses() []procInfo {
 	return procs
 }
 
+type memStatus struct {
+	ramUsedKB, ramTotalKB   int64
+	swapUsedKB, swapTotalKB int64
+}
+
+// readMemStatus reports system-wide RAM and swap usage for the accounting
+// line under the warning banner, as distinct from readProcesses' per-process
+// breakdown.
+func readMemStatus() memStatus {
+	f, err := os.Open("/proc/meminfo")
+	if err != nil {
+		return memStatus{}
+	}
+	defer f.Close()
+
+	var memTotal, memAvailable, swapTotal, swapFree int64
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		fields := strings.Fields(scanner.Text())
+		if len(fields) < 2 {
+			continue
+		}
+		val, _ := strconv.ParseInt(fields[1], 10, 64)
+		switch fields[0] {
+		case "MemTotal:":
+			memTotal = val
+		case "MemAvailable:":
+			memAvailable = val
+		case "SwapTotal:":
+			swapTotal = val
+		case "SwapFree:":
+			swapFree = val
+		}
+	}
+	return memStatus{
+		ramUsedKB:   memTotal - memAvailable,
+		ramTotalKB:  memTotal,
+		swapUsedKB:  swapTotal - swapFree,
+		swapTotalKB: swapTotal,
+	}
+}
+
+func gb(kb int64) float64 {
+	return float64(kb) / (1024 * 1024)
+}
+
+func accountingText(m memStatus) string {
+	var swapPct float64
+	if m.swapTotalKB > 0 {
+		swapPct = float64(m.swapUsedKB) / float64(m.swapTotalKB) * 100
+	}
+	return fmt.Sprintf(
+		"Swap: %.2f GB used / %.2f GB total (%.0f%% full)    RAM: %.2f GB used / %.2f GB total",
+		gb(m.swapUsedKB), gb(m.swapTotalKB), swapPct,
+		gb(m.ramUsedKB), gb(m.ramTotalKB),
+	)
+}
+
 func main() {
 	gtk.Init(nil)
 
@@ -96,6 +154,15 @@ func main() {
 	box, _ := gtk.BoxNew(gtk.ORIENTATION_VERTICAL, 8)
 	box.SetBorderWidth(8)
 	win.Add(box)
+
+	warningLabel, _ := gtk.LabelNew("")
+	warningLabel.SetMarkup(`<span foreground="red" weight="bold" size="x-large">⚠ SWAP IS FULL</span>`)
+	warningLabel.SetHAlign(gtk.ALIGN_START)
+	box.PackStart(warningLabel, false, false, 0)
+
+	accountingLabel, _ := gtk.LabelNew(accountingText(readMemStatus()))
+	accountingLabel.SetHAlign(gtk.ALIGN_START)
+	box.PackStart(accountingLabel, false, false, 0)
 
 	label, _ := gtk.LabelNew("Sorted by memory + swap used, highest first. Select a process and force quit it.")
 	label.SetHAlign(gtk.ALIGN_START)
@@ -157,6 +224,8 @@ func main() {
 	}
 
 	refresh := func() {
+		accountingLabel.SetText(accountingText(readMemStatus()))
+
 		prevPID, hadSelection := selectedPID()
 		vadj := scrolled.GetVAdjustment()
 		scrollPos := vadj.GetValue()
