@@ -1,0 +1,52 @@
+name: RPM
+
+# Builds swap-watchdog as an RPM in a Fedora container and uploads it to the
+# forge's `quine` RPM group,
+# https://forge.quinefoundation.com/api/packages/quine-global-labs/rpm/quine,
+# which quine-linux's image installs it from.
+#
+# Secret: REGISTRY_TOKEN, a Forgejo token with package write access.
+# Variable (optional): REGISTRY_USER, the token's owner (default: the actor).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: rpm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rpm:
+    runs-on: runner-x86-linux
+    steps:
+      - uses: https://forge.quinefoundation.com/quine-global-labs/mirror-actions-checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build
+        # /var/cache/quine-rpm-build outlives the job (host-mode runner): Go's toolchain and module cache.
+        run: |
+          mkdir -p out /var/cache/quine-rpm-build
+          podman run --rm -v "$PWD":/src -v /var/cache/quine-rpm-build:/cache -v "$PWD/out":/out \
+            registry.fedoraproject.org/fedora:44 bash /src/packaging/build-rpm.sh
+          ls -l out
+
+      - name: Upload to the quine RPM group
+        env:
+          REGISTRY_USER: ${{ vars.REGISTRY_USER || github.actor }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          [ -n "$REGISTRY_TOKEN" ] || { echo "::error::no REGISTRY_TOKEN secret (org or repo)"; exit 1; }
+          netrc=$(mktemp); trap 'rm -f "$netrc"' EXIT; chmod 600 "$netrc"
+          printf 'machine %s login %s password %s\n' "${GITHUB_SERVER_URL#https://}" "$REGISTRY_USER" "$REGISTRY_TOKEN" >"$netrc"
+          for f in out/*.rpm; do
+            code=$(curl -sS -o /dev/null -w '%{http_code}' --netrc-file "$netrc" --upload-file "$f" \
+              "$GITHUB_SERVER_URL/api/packages/quine-global-labs/rpm/quine/upload")
+            echo "$code ${f#out/}"
+            [ "$code" = 201 ] || [ "$code" = 409 ]
+          done
+
+      - name: Clean up
+        if: always()
+        run: rm -rf out build
