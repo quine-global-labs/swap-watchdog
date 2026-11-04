@@ -19,7 +19,15 @@ concurrency:
 
 jobs:
   rpm:
-    runs-on: runner-x86-linux
+    # Each architecture natively, on its own runner.
+    strategy:
+      matrix:
+        include:
+          - arch: amd64
+            runner: runner-x86-linux
+          - arch: arm64
+            runner: runner-arm64-linux
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: https://forge.quinefoundation.com/quine-global-labs/mirror-actions-checkout@v4
         with:
@@ -29,6 +37,7 @@ jobs:
         with:
           name: swap-watchdog
           kind: go
+          archs: ${{ matrix.arch }}
           go-packages: ./cmd/swap-watchdog ./cmd/force-quit-gui
           dnf-packages: gtk3-devel
           registry-username: ${{ vars.REGISTRY_USER || github.actor }}
