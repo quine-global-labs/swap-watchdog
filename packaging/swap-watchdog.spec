@@ -8,7 +8,7 @@ Release:        %{release_}%{?dist}
 Summary:        Reveals a Force Quit window when swap or memory pressure turns critical
 License:        Apache-2.0
 URL:            https://forge.quinefoundation.com/quine-global-labs/swap-watchdog
-ExclusiveArch:  x86_64
+ExclusiveArch:  x86_64 aarch64
 
 Requires:       gtk3
 Requires:       kdotool

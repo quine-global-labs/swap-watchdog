@@ -26,10 +26,16 @@ jobs:
 
       - name: Build
         # /var/cache/quine-rpm-build outlives the job (host-mode runner): Go's toolchain and module cache.
+        # Once per architecture, natively for amd64 and under the runner's QEMU emulation for arm64
+        # (quine-linux's arm64 image installs that one). force-quit-gui links GTK through cgo, so
+        # it's built for arm64 in an arm64 Fedora rather than cross-compiled.
         run: |
           mkdir -p out /var/cache/quine-rpm-build
-          podman run --rm -v "$PWD":/src -v /var/cache/quine-rpm-build:/cache -v "$PWD/out":/out \
-            registry.fedoraproject.org/fedora:44 bash /src/packaging/build-rpm.sh
+          for arch in amd64 arm64; do
+            podman run --rm --platform "linux/$arch" -v "$PWD":/src -v /var/cache/quine-rpm-build:/cache -v "$PWD/out":/out \
+              registry.fedoraproject.org/fedora:44 bash /src/packaging/build-rpm.sh
+            rm -rf bin
+          done
           ls -l out
 
       - name: Upload to the quine RPM group
