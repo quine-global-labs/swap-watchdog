@@ -2,7 +2,7 @@ name: RPM
 
 # Builds swap-watchdog as RPMs for x86_64 and aarch64 and uploads them to the
 # forge's `quine` RPM group,
-# https://forge.quinefoundation.com/api/packages/quine-global-labs/rpm/quine,
+# https://forge.in.quineglobal.com/api/packages/quine-global-labs/rpm/quine,
 # which quine-linux's image installs it from. The build itself is the shared
 # quine-global/app-build action; packaging/swap-watchdog.spec is this app's part.
 #
@@ -29,11 +29,11 @@ jobs:
             runner: runner-arm64-linux
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: https://forge.quinefoundation.com/quine-global-labs/mirror-actions-checkout@v4
+      - uses: https://forge.in.quineglobal.com/quine-global-labs/mirror-actions-checkout@v4
         with:
           fetch-depth: 0
 
-      - uses: https://forge.quinefoundation.com/quine-global/app-build@v1
+      - uses: https://forge.in.quineglobal.com/quine-global/app-build@v1
         with:
           name: swap-watchdog
           kind: go
