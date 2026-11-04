@@ -1,4 +1,4 @@
-# Built by packaging/build-rpm.sh, which compiles the binaries first; not a
+# Built by quine-global/app-build (kind go), which compiles the binaries first; not a
 # from-source spec (no %prep/%build).
 %global debug_package %{nil}
 
