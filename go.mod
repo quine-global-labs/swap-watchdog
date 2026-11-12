@@ -5,7 +5,7 @@ go 1.27.1
 require (
 	github.com/aarzilli/nucular v0.0.0-20260922071552-58b808aa5772
 	github.com/gotk3/gotk3 v0.6.3
-	github.com/jezek/xgb v1.1.1
+	github.com/jezek/xgb v1.3.1
 )
 
 require (
