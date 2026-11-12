@@ -118,6 +118,55 @@ func readMemStatus() memStatus {
 	}
 }
 
+// Thresholds for the headline, as swap-watchdog uses them to reveal this
+// window (its SWAP_PCT_THRESHOLD and PSI_THRESHOLD defaults).
+const (
+	swapFullFreePct = 1.0
+	pressureHighPSI = 10.0
+)
+
+// memoryPressureFull is the kernel PSI "full avg10" figure for memory, or
+// -1 when it can't be read.
+func memoryPressureFull() float64 {
+	f, err := os.Open("/proc/pressure/memory")
+	if err != nil {
+		return -1
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "full ") {
+			continue
+		}
+		for _, field := range strings.Fields(line) {
+			if val, found := strings.CutPrefix(field, "avg10="); found {
+				avg10, err := strconv.ParseFloat(val, 64)
+				if err == nil {
+					return avg10
+				}
+			}
+		}
+	}
+	return -1
+}
+
+// headlineMarkup says what's actually wrong, or nothing alarming when
+// nothing is: the window is also on screen at times swap is fine (opened
+// by hand, or at login before it minimizes).
+func headlineMarkup(m memStatus, psiFull float64) string {
+	if m.swapTotalKB > 0 {
+		freePct := float64(m.swapTotalKB-m.swapUsedKB) / float64(m.swapTotalKB) * 100
+		if freePct < swapFullFreePct {
+			return `<span foreground="red" weight="bold" size="x-large">⚠ SWAP IS FULL</span>`
+		}
+	}
+	if psiFull > pressureHighPSI {
+		return `<span foreground="red" weight="bold" size="x-large">⚠ MEMORY PRESSURE IS HIGH</span>`
+	}
+	return `<span weight="bold" size="large">Force Quit Monitor</span>`
+}
+
 func gb(kb int64) float64 {
 	return float64(kb) / (1024 * 1024)
 }
@@ -156,7 +205,7 @@ func main() {
 	win.Add(box)
 
 	warningLabel, _ := gtk.LabelNew("")
-	warningLabel.SetMarkup(`<span foreground="red" weight="bold" size="x-large">⚠ SWAP IS FULL</span>`)
+	warningLabel.SetMarkup(headlineMarkup(readMemStatus(), memoryPressureFull()))
 	warningLabel.SetHAlign(gtk.ALIGN_START)
 	box.PackStart(warningLabel, false, false, 0)
 
@@ -224,7 +273,9 @@ func main() {
 	}
 
 	refresh := func() {
-		accountingLabel.SetText(accountingText(readMemStatus()))
+		mem := readMemStatus()
+		warningLabel.SetMarkup(headlineMarkup(mem, memoryPressureFull()))
+		accountingLabel.SetText(accountingText(mem))
 
 		prevPID, hadSelection := selectedPID()
 		vadj := scrolled.GetVAdjustment()
@@ -284,13 +335,22 @@ func main() {
 		refresh()
 	})
 
-	win.ShowAll()
-	// Deferred so the window has actually been mapped before we ask the
-	// compositor to minimize it, rather than racing the initial show.
-	glib.TimeoutAdd(200, func() bool {
-		win.Iconify()
-		return false // run once
+	// Start minimized: once the window is actually mapped (a minimize
+	// before that is ignored), not after a fixed delay. A 200 ms timer lost
+	// that race on a slow start, the live session from the ISO, and left the
+	// window open at login.
+	var mappedOnce bool
+	win.Connect("map-event", func() bool {
+		if !mappedOnce {
+			mappedOnce = true
+			glib.IdleAdd(func() bool {
+				win.Iconify()
+				return false
+			})
+		}
+		return false
 	})
+	win.ShowAll()
 
 	gtk.Main()
 }
