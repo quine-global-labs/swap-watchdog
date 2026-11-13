@@ -1,4 +1,4 @@
-module github.com/quine-global-labs/swap-watchdog
+module github.com/quine-global/swap-watchdog
 
 go 1.27.1
 
